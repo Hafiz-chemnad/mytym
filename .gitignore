@@ -61,3 +61,38 @@ windows/runner/profile/
 
 # Environment Variables (Keep your tokens safe!)
 .env
+# macOS / Linux build outputs (if you ever build for them)
+macos/Flutter/ephemeral/
+linux/flutter/ephemeral/
+
+# Android signing keys — critical, never commit these
+**/android/key.properties
+**/android/app/upload-keystore.jks
+**/*.jks
+**/*.keystore
+
+# iOS specific
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.podspec
+
+# Generated localization files (if using intl/gen-l10n)
+**/lib/generated_plugin_registrant.dart
+**/lib/l10n/generated/
+
+# VS Code workspace-specific settings some teams exclude (optional, you already commented out .vscode/)
+*.code-workspace
+
+# Local database files if SQLite db ever gets created in project root during dev/testing
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup/editor swap files
+*~
+*.bak
+*.orig
+
+# OS-specific junk
+Thumbs.db
+desktop.ini

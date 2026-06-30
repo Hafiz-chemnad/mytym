@@ -1,16 +1,20 @@
-import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/database_helper.dart';
 
 class InboxScreen extends StatefulWidget {
   final String restaurantId;
-  final Function(String, String) onContactSelected;
+  final Function(String phone, String phoneId, String msgId) onContactSelected;
+  final Function(int, String)? onUnreadCountChanged;
+  final ValueNotifier<int> syncTrigger;
 
   const InboxScreen({
     super.key,
     required this.restaurantId,
     required this.onContactSelected,
+    this.onUnreadCountChanged,
+    required this.syncTrigger,
   });
 
   @override
@@ -18,87 +22,177 @@ class InboxScreen extends StatefulWidget {
 }
 
 class _InboxScreenState extends State<InboxScreen> {
-  Timer? _pollingTimer;
   List<Map<String, dynamic>> _messages = [];
   bool _isLoading = true;
 
-  // 🚀 Real Functional States
+  String _lastMessagesHash = "";
+
   String _searchQuery = "";
-  String _activeFilter = "All"; // Can be "All" or "Unread"
+  String _activeFilter = "All";
+
+  // readCache is now owned by the parent (DashboardScreen) via widget.readCache
 
   @override
   void initState() {
     super.initState();
     _fetchMessages();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      _fetchMessages();
-    });
+    // 🚀 Listen to Master Loop
+    widget.syncTrigger.addListener(_onSyncTriggered);
+  }
+
+  void _onSyncTriggered() {
+    _fetchMessages(isPolling: true);
   }
 
   @override
   void dispose() {
-    _pollingTimer?.cancel();
+    widget.syncTrigger.removeListener(_onSyncTriggered); // 🚀 Clean up
     super.dispose();
   }
 
-  Future<void> _fetchMessages() async {
+  Future<void> _fetchMessages({bool isPolling = false}) async {
     try {
-      final url = Uri.parse('https://tym-whatsapp-backend.onrender.com/api/messages');
-      final response = await http.get(url);
+      final latestPerContact = await DatabaseHelper.instance.getAllMessages(
+        widget.restaurantId,
+      );
 
-      if (response.statusCode == 200) {
-        final dynamic decodedData = jsonDecode(response.body);
-        List<dynamic> allMessages = [];
+      String newHash =
+          latestPerContact.length.toString() +
+          latestPerContact
+              .map((m) => '${m["_id"] ?? ""}:${m["createdAt"] ?? ""}')
+              .join('|');
 
-        if (decodedData is Map) {
-          allMessages = decodedData['data'] ?? decodedData['messages'] ?? [];
-        } else if (decodedData is List) {
-          allMessages = decodedData;
-        }
+      if (isPolling && newHash == _lastMessagesHash) return;
+      _lastMessagesHash = newHash;
 
-        final myMessages = allMessages.where((m) {
-          String resId = m['restaurantId']?.toString() ?? m['restaurant_id']?.toString() ?? "";
-          return resId == widget.restaurantId;
-        }).toList();
+      if (mounted) {
+        setState(() {
+          _messages = latestPerContact;
 
-        if (mounted) {
-          setState(() {
-            _messages = List<Map<String, dynamic>>.from(myMessages);
-            _isLoading = false;
-          });
-        }
+          _isLoading = false;
+        });
+        _pushUnreadCount(latestPerContact);
       }
     } catch (e) {
-      print("Inbox Fetch Error: $e");
-      if (mounted && _isLoading) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted && _isLoading) setState(() => _isLoading = false);
     }
   }
 
-  // 🕒 Transforms timestamps into "56 mins ago", "1 day ago", etc.
+  /// Simple rule: latest message is inbound AND not yet read → unread.
+  bool _isUnread(Map<String, dynamic> latestMsg) {
+    final String? lastInbound = latestMsg['lastInboundTime']?.toString();
+    if (lastInbound == null || lastInbound.isEmpty) return false;
+
+    final String? readAt = latestMsg['contactReadAt']?.toString();
+    if (readAt == null || readAt.isEmpty) return true;
+
+    try {
+      // Parse both as UTC to avoid timezone comparison bugs
+      final DateTime inboundDt = DateTime.parse(lastInbound).toUtc();
+      final DateTime readDt = DateTime.parse(readAt).toUtc();
+      return inboundDt.isAfter(readDt);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _pushUnreadCount(List<Map<String, dynamic>> latestPerContact) {
+    final unreadMsgs = latestPerContact.where(_isUnread).toList();
+    int count = unreadMsgs.length;
+
+    // 🚀 FIX: Extract a preview from the most recent unread message
+    String preview = "";
+    if (unreadMsgs.isNotEmpty) {
+      final latest = unreadMsgs.first;
+      var content = latest['messageContent'];
+      if (content is Map) {
+        if (content['image'] != null)
+          preview = "📷 Image";
+        else if (content['audio'] != null)
+          preview = "🎵 Voice note";
+        else if (content['document'] != null)
+          preview = "📄 Document";
+        else if (content['video'] != null)
+          preview = "🎥 Video";
+        else
+          preview = content['text']?['body']?.toString() ?? "";
+      } else {
+        preview = (content ?? latest['messageText'] ?? "").toString();
+      }
+      String name =
+          latest['customerName']?.toString() ??
+          latest['customerNumber']?.toString() ??
+          "";
+      if (name.isNotEmpty) preview = "$name: $preview";
+    }
+
+    if (widget.onUnreadCountChanged != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onUnreadCountChanged!(count, preview);
+      });
+    }
+  }
+
+  bool _isOutgoing(Map<String, dynamic> msg) =>
+      msg['isOutgoing'] == true ||
+      msg['is_outgoing'] == true ||
+      msg['direction']?.toString().toLowerCase().contains('out') == true;
+
+  String _msgId(Map<String, dynamic> msg) =>
+      msg['_id']?.toString() ??
+      msg['id']?.toString() ??
+      msg['createdAt']?.toString() ??
+      '';
+
   String _timeAgo(String? rawDate) {
     if (rawDate == null || rawDate.isEmpty) return "";
     try {
       DateTime date = DateTime.parse(rawDate).toLocal();
       Duration diff = DateTime.now().difference(date);
-      
-      if (diff.inDays > 1) return "${diff.inDays} days ago";
-      if (diff.inDays == 1) return "1 day ago";
-      if (diff.inHours > 1) return "${diff.inHours} hrs ago";
-      if (diff.inHours == 1) return "1 hr ago";
-      if (diff.inMinutes > 1) return "${diff.inMinutes} mins ago";
-      if (diff.inMinutes == 1) return "1 min ago";
-      return "Just now";
+      if (diff.inDays > 1) return "${diff.inDays}d ago";
+      if (diff.inDays == 1) return "1d ago";
+      if (diff.inHours > 1) return "${diff.inHours}h ago";
+      if (diff.inHours == 1) return "1h ago";
+      if (diff.inMinutes > 1) return "${diff.inMinutes}m ago";
+      if (diff.inMinutes == 1) return "1m ago";
+      return "Now";
     } catch (e) {
       return "";
+    }
+  }
+
+  // 🔥 FIX: The chat's "last activity" time must be whichever side spoke last —
+  // restaurant→customer OR customer→restaurant. `createdAt` is supposed to
+  // already be the latest message overall, but if it ever drifts (e.g. a
+  // status-only re-sync resets it), this guarantees correctness by comparing
+  // it against `lastInboundTime` (the customer's latest message) and using
+  // whichever is actually newer.
+  String? _latestActivityTimestamp(Map<String, dynamic> msg) {
+    final String? overall = msg['createdAt']?.toString();
+    final String? lastInbound = msg['lastInboundTime']?.toString();
+
+    DateTime? overallDt = _tryParse(overall);
+    DateTime? inboundDt = _tryParse(lastInbound);
+
+    if (overallDt == null) return lastInbound;
+    if (inboundDt == null) return overall;
+
+    return inboundDt.isAfter(overallDt) ? lastInbound : overall;
+  }
+
+  DateTime? _tryParse(String? s) {
+    if (s == null || s.isEmpty) return null;
+    try {
+      return DateTime.parse(s);
+    } catch (_) {
+      return null;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF9FAFB), 
+      backgroundColor: const Color(0xFFF9FAFB),
       body: Column(
         children: [
           _buildTopSearchBar(),
@@ -109,7 +203,6 @@ class _InboxScreenState extends State<InboxScreen> {
     );
   }
 
-  // 🔍 Fully Functional Search Bar & Refresh
   Widget _buildTopSearchBar() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -126,29 +219,28 @@ class _InboxScreenState extends State<InboxScreen> {
                 onChanged: (val) => setState(() => _searchQuery = val),
                 decoration: InputDecoration(
                   hintText: "Search name or phone...",
-                  hintStyle: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
-                  prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF9CA3AF), size: 20),
+                  hintStyle: const TextStyle(
+                    color: Color(0xFF9CA3AF),
+                    fontSize: 14,
+                  ),
+                  prefixIcon: const Icon(
+                    Icons.search_rounded,
+                    color: Color(0xFF9CA3AF),
+                    size: 20,
+                  ),
                   filled: true,
                   fillColor: Colors.white,
                   contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: Color(0xFFD1D5DB))),
-                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: Color(0xFF3B82F6))),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(6),
+                    borderSide: const BorderSide(color: Color(0xFFD1D5DB)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(6),
+                    borderSide: const BorderSide(color: Color(0xFF3B82F6)),
+                  ),
                 ),
               ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          // 🔄 Real Refresh Button
-          InkWell(
-            onTap: () {
-              setState(() => _isLoading = true);
-              _fetchMessages();
-            },
-            borderRadius: BorderRadius.circular(6),
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(border: Border.all(color: const Color(0xFFD1D5DB)), borderRadius: BorderRadius.circular(6)),
-              child: const Icon(Icons.refresh_rounded, size: 20, color: Color(0xFF4B5563)),
             ),
           ),
         ],
@@ -156,7 +248,6 @@ class _InboxScreenState extends State<InboxScreen> {
     );
   }
 
-  // 🎛️ Fully Functional Filters (All vs Unread)
   Widget _buildFilterBar() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -181,192 +272,422 @@ class _InboxScreenState extends State<InboxScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
-          color: isActive ? const Color(0xFFE0F2FE) : const Color(0xFFF3F4F6), 
+          color: isActive ? const Color(0xFFE0F2FE) : const Color(0xFFF3F4F6),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: isActive ? const Color(0xFFBAE6FD) : Colors.transparent),
+          border: Border.all(
+            color: isActive ? const Color(0xFFBAE6FD) : Colors.transparent,
+          ),
         ),
         child: Text(
-          label, 
+          label,
           style: TextStyle(
-            fontSize: 13, 
+            fontSize: 13,
             fontWeight: FontWeight.bold,
-            color: isActive ? const Color(0xFF0284C7) : const Color(0xFF4B5563)
-          )
+            color: isActive ? const Color(0xFF0284C7) : const Color(0xFF4B5563),
+          ),
         ),
       ),
     );
   }
 
-  // 📋 Filtered Chat List
   Widget _buildChatList() {
     if (_isLoading && _messages.isEmpty) {
-      return const Center(child: CircularProgressIndicator(color: Color(0xFF3B82F6)));
+      return ListView.builder(
+        itemCount: 6,
+        itemBuilder: (context, index) => PulsingSkeleton(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            child: Row(
+              children: [
+                Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 120,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 200,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
 
-    final Map<String, Map<String, dynamic>> latestChats = {};
-    final Map<String, int> unreadCounts = {};
-    final Map<String, bool> hasSeenOutgoing = {};
+    // _messages is already: one latest message per contact, newest contact first.
+    // Just filter — no grouping, no sorting needed.
+    int totalUnread = 0;
+    final List<Map<String, dynamic>> filtered = [];
 
-    for (var msg in _messages.reversed) {
-      String phone = msg['customerNumber']?.toString() ?? msg['customer_number']?.toString() ?? "";
+    for (var msg in _messages) {
+      String phone = msg['customerNumber']?.toString() ?? '';
       if (phone.isEmpty) continue;
 
-      bool isOutgoing = msg['isOutgoing'] == true || msg['is_outgoing'] == true || msg['direction']?.toString().toLowerCase().contains('out') == true;
+      bool unread = _isUnread(msg);
+      if (unread) totalUnread++;
 
-      if (!latestChats.containsKey(phone)) {
-        latestChats[phone] = msg;
-        unreadCounts[phone] = 0;
-        hasSeenOutgoing[phone] = false;
-      }
-
-      if (!hasSeenOutgoing[phone]! && !isOutgoing) {
-        unreadCounts[phone] = unreadCounts[phone]! + 1;
-      } else if (isOutgoing) {
-        hasSeenOutgoing[phone] = true;
-      }
-    }
-
-    // 🚀 APPLY REAL FILTERS & SEARCH
-    List<String> filteredContacts = latestChats.keys.where((phone) {
-      final lastMsg = latestChats[phone]!;
-      String name = lastMsg['customerName']?.toString() ?? phone;
+      String name = msg['customerName']?.toString() ?? phone;
       if (name.isEmpty) name = phone;
-      
-      int unreads = unreadCounts[phone] ?? 0;
 
-      // 1. Check Search Query
-      if (_searchQuery.isNotEmpty) {
-        if (!name.toLowerCase().contains(_searchQuery.toLowerCase()) && !phone.contains(_searchQuery)) {
-          return false; // Hide if it doesn't match search
-        }
-      }
+      if (_searchQuery.isNotEmpty &&
+          !name.toLowerCase().contains(_searchQuery.toLowerCase()) &&
+          !phone.contains(_searchQuery))
+        continue;
+      if (_activeFilter == "Unread" && !unread) continue;
 
-      // 2. Check Active Tab Filter
-      if (_activeFilter == "Unread" && unreads == 0) {
-        return false; // Hide read messages if "Unread" tab is active
-      }
-
-      return true;
-    }).toList();
-
-    if (filteredContacts.isEmpty) {
-      return const Center(child: Text("No conversations found.", style: TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.bold)));
+      filtered.add(msg);
     }
 
-    return ListView.separated(
-      itemCount: filteredContacts.length,
-      separatorBuilder: (context, index) => const Divider(height: 1, color: Color(0xFFE5E7EB)),
-      itemBuilder: (context, i) {
-        final phone = filteredContacts[i];
-        final lastMsg = latestChats[phone]!;
-        final int unreads = unreadCounts[phone] ?? 0;
-
-        String msgText = lastMsg['messageContent'] is Map
-            ? (lastMsg['messageContent']['text']?['body'] ?? "[Media/Interactive]") 
-            : (lastMsg['messageContent'] ?? lastMsg['messageText'] ?? "No messages yet");
-            
-        if (msgText.contains("templateName")) msgText = "[Campaign Message]";
-        if (lastMsg['messageContent'] is Map && lastMsg['messageContent']['location'] != null) msgText = "📍 Location";
-
-        String name = lastMsg['customerName']?.toString() ?? phone;
-        if (name.isEmpty) name = phone;
-        
-        String initial = name.replaceAll(RegExp(r'[^a-zA-Z]'), ''); 
-        initial = initial.isNotEmpty ? initial[0].toUpperCase() : "U";
-
-        String phoneId = lastMsg['phoneNumberId']?.toString() ?? ""; 
-        String timeAgo = _timeAgo(lastMsg['createdAt']?.toString() ?? lastMsg['created_at']?.toString());
-
-        return _buildEnterpriseChatRow(phone, name, initial, msgText, unreads, timeAgo, phoneId);
+    // Push badge count from build path too (covers edge cases)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        String preview = "";
+        final unreadList = filtered.where(_isUnread).toList();
+        if (unreadList.isNotEmpty) {
+          final latest = unreadList.first;
+          var content = latest['messageContent'];
+          if (content is Map) {
+            if (content['image'] != null)
+              preview = "📷 Image";
+            else if (content['audio'] != null)
+              preview = "🎵 Voice note";
+            else if (content['document'] != null)
+              preview = "📄 Document";
+            else if (content['video'] != null)
+              preview = "🎥 Video";
+            else
+              preview = content['text']?['body']?.toString() ?? "";
+          } else {
+            preview = (content ?? latest['messageText'] ?? "").toString();
+          }
+          String name =
+              latest['customerName']?.toString() ??
+              latest['customerNumber']?.toString() ??
+              "";
+          if (name.isNotEmpty) preview = "$name: $preview";
+        }
+        widget.onUnreadCountChanged?.call(totalUnread, preview);
       }
+    });
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+          child: Text(
+            "${filtered.length} conversations",
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF9CA3AF),
+            ),
+          ),
+        ),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      Icon(
+                        Icons.inbox_outlined,
+                        size: 64,
+                        color: Color(0xFFD1D5DB),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        "No conversations found",
+                        style: TextStyle(
+                          color: Color(0xFF6B7280),
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: filtered.length,
+                  separatorBuilder: (context, index) =>
+                      const Divider(height: 1, color: Color(0xFFE5E7EB)),
+                  itemBuilder: (context, i) {
+                    final msg = filtered[i];
+                    final String phone =
+                        msg['customerNumber']?.toString() ?? '';
+                    final bool unread = _isUnread(msg);
+                    final bool isOutgoing = _isOutgoing(msg);
+                    final String lastMsgId = _msgId(msg);
+
+                    String msgText = "";
+                    // Use lastInboundContent for preview if available,
+                    // otherwise fall back to latest overall message
+                    dynamic content;
+                    final String? rawInbound = msg['lastInboundContent']
+                        ?.toString();
+                    if (rawInbound != null && rawInbound.isNotEmpty) {
+                      try {
+                        content = jsonDecode(rawInbound);
+                      } catch (_) {
+                        content = rawInbound;
+                      }
+                    } else {
+                      content = "Tap to see messages";
+                    }
+
+                    final bool previewIsInbound =
+                        rawInbound != null && rawInbound.isNotEmpty;
+                    if (content is Map) {
+                      if (content['image'] != null)
+                        msgText = "📷 Image";
+                      else if (content['audio'] != null)
+                        msgText = "🎵 Voice note";
+                      else if (content['document'] != null)
+                        msgText = "📄 Document";
+                      else if (content['video'] != null)
+                        msgText = "🎥 Video";
+                      else if (content['location'] != null)
+                        msgText = "📍 Location";
+                      else if (content['type'] == 'template' ||
+                          msg['messageType'] == 'template')
+                        msgText = "🤖 [Campaign Message]";
+                      else if (content['templateName'] != null)
+                        msgText = "🤖 ${content['templateName']}";
+                      else if (content['text'] is Map)
+                        msgText = content['text']['body']?.toString() ?? "";
+                      else if (content['body'] != null)
+                        msgText = content['body'].toString();
+                      else if (content['button'] is Map)
+                        msgText = "🔘 ${content['button']['text'] ?? 'Button'}";
+                      else if (content['interactive'] is Map) {
+                        final inter = content['interactive'];
+                        if (inter['button_reply'] != null)
+                          msgText =
+                              "🔘 ${inter['button_reply']['title'] ?? ''}";
+                        else if (inter['list_reply'] != null)
+                          msgText = "📋 ${inter['list_reply']['title'] ?? ''}";
+                        else
+                          msgText = "[Interactive]";
+                      } else
+                        msgText = "[Interactive]";
+                    } else {
+                      msgText = content?.toString() ?? "";
+                    }
+                    if (msgText.isEmpty) msgText = "💬 Message";
+
+                    String name = msg['customerName']?.toString() ?? phone;
+                    if (name.isEmpty) name = phone;
+                    String initial = name.trim().isNotEmpty
+                        ? name.trim()[0].toUpperCase()
+                        : "U";
+                    String phoneId = msg['phoneNumberId']?.toString() ?? "";
+                    String timeAgo = _timeAgo(_latestActivityTimestamp(msg));
+
+                    return _buildEnterpriseChatRow(
+                      phone,
+                      name,
+                      initial,
+                      msgText,
+                      unread,
+                      timeAgo,
+                      phoneId,
+                      isOutgoing,
+                      lastMsgId,
+                      previewIsInbound,
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
-  // 🏢 Chat Row UI
-  Widget _buildEnterpriseChatRow(String phone, String name, String initial, String msgText, int unreadCount, String timeAgo, String phoneId) {
+  Widget _buildEnterpriseChatRow(
+    String phone,
+    String name,
+    String initial,
+    String msgText,
+    bool hasUnread,
+    String timeAgo,
+    String phoneId,
+    bool isOutgoing,
+    String lastMsgId,
+    bool previewIsInbound,
+  ) {
     return Material(
-      color: Colors.white,
+      color: hasUnread ? const Color(0xFFF0FDF4) : Colors.white,
       child: InkWell(
-        onTap: () => widget.onContactSelected(phone, phoneId),
-        hoverColor: const Color(0xFFF9FAFB),
+        onTap: () async {
+          await DatabaseHelper.instance.markContactAsRead(
+            widget.restaurantId,
+            phone,
+            lastMsgId,
+          );
+          await _fetchMessages();
+          if (mounted) widget.onContactSelected(phone, phoneId, lastMsgId);
+        },
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                width: 50,
-                height: 50,
-                child: Stack(
-                  children: [
-                    Container(
-                      width: 46, height: 46,
-                      decoration: const BoxDecoration(color: Color(0xFFE5E7EB), shape: BoxShape.circle),
-                      child: Center(
-                        child: Text(initial, style: const TextStyle(fontSize: 20, color: Color(0xFF111827), fontWeight: FontWeight.w600)),
-                      ),
+              Container(
+                width: 46,
+                height: 46,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFE5E7EB),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Text(
+                    initial,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      color: Color(0xFF111827),
+                      fontWeight: FontWeight.w600,
                     ),
-                    Positioned(
-                      bottom: 0, right: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(color: const Color(0xFF10B981), shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)),
-                        child: const Icon(Icons.chat_bubble_rounded, size: 10, color: Colors.white), 
-                      ),
-                    )
-                  ],
+                  ),
                 ),
               ),
               const SizedBox(width: 16),
-              
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       name,
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF111827)),
-                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF111827),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      msgText,
-                      style: TextStyle(fontSize: 14, color: unreadCount > 0 ? const Color(0xFF374151) : const Color(0xFF6B7280), fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.w400),
-                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Icon(
+                          !previewIsInbound
+                              ? Icons.call_made_rounded
+                              : Icons.call_received_rounded,
+                          size: 14,
+                          color: !previewIsInbound
+                              ? const Color(0xFF9CA3AF)
+                              : const Color(0xFF3B82F6),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            msgText,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: hasUnread
+                                  ? const Color(0xFF374151)
+                                  : const Color(0xFF6B7280),
+                              fontWeight: hasUnread
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  const Text("TYM", style: TextStyle(color: Color(0xFF3B82F6), fontWeight: FontWeight.w800, fontSize: 12, letterSpacing: 0.5)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      const Icon(Icons.access_time_rounded, size: 12, color: Color(0xFF9CA3AF)),
-                      const SizedBox(width: 4),
-                      Text(timeAgo, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
-                    ],
+                  Text(
+                    timeAgo,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: hasUnread
+                          ? const Color(0xFF10B981)
+                          : const Color(0xFF9CA3AF),
+                      fontWeight: hasUnread
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
                   ),
-                  if (unreadCount > 0) ...[
-                    const SizedBox(height: 8),
+                  const SizedBox(height: 8),
+                  if (hasUnread)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
-                      child: Text(
-                        unreadCount.toString(),
-                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF10B981),
+                        shape: BoxShape.circle,
                       ),
                     ),
-                  ]
                 ],
-              )
+              ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class PulsingSkeleton extends StatefulWidget {
+  final Widget child;
+  const PulsingSkeleton({super.key, required this.child});
+  @override
+  _PulsingSkeletonState createState() => _PulsingSkeletonState();
+}
+
+class _PulsingSkeletonState extends State<PulsingSkeleton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.4, end: 1.0).animate(_controller),
+      child: widget.child,
     );
   }
 }
