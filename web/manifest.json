@@ -1,6 +1,6 @@
 {
-    "name": "whatsapp_erp_api",
-    "short_name": "whatsapp_erp_api",
+    "name": "whatsapp_erp",
+    "short_name": "whatsapp_erp",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

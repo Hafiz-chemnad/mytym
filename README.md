@@ -1,4 +1,4 @@
-# whatsapp_erp_api
+# whatsapp_erp
 
 A new Flutter project.
 

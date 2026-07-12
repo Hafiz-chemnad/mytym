@@ -27,6 +27,7 @@ migrate_working_dir/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
@@ -95,4 +96,4 @@ linux/flutter/ephemeral/
 
 # OS-specific junk
 Thumbs.db
-desktop.ini
+erp_backend/
