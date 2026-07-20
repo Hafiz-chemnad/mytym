@@ -21,7 +21,7 @@ class DbConnection {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('test2.db');
+    _database = await _initDB('test3.db');
     return _database!;
   }
 
@@ -54,6 +54,7 @@ return await openDatabase(
         primary_flow TEXT,
         delivery_flow TEXT,
         delivery_radius REAL,
+        delivery_fee REAL DEFAULT 0,
         welcome_video_url TEXT,
         welcome_video_id TEXT,
         rzp_key TEXT,
@@ -131,8 +132,8 @@ return await openDatabase(
         labels_json TEXT DEFAULT '[]',
         sync_status TEXT DEFAULT 'synced',
         read_at TEXT,
-        source TEXT DEFAULT 'manual',      // 🚀 ADD THIS
-        created_at TEXT,                   // 🚀 ADD THIS
+        source TEXT DEFAULT 'manual',      
+        created_at TEXT,                   
         PRIMARY KEY (restaurant_id, customer_number)
       )
     ''');
@@ -267,7 +268,7 @@ return await openDatabase(
             status TEXT DEFAULT 'PENDING',
             rejected_reason TEXT,
             variable_mapping_json TEXT DEFAULT '{}',
-            header_type TEXT DEFAULT 'NONE',  -- 🚀 ADD THIS
+            header_type TEXT DEFAULT 'NONE',  
             header_text TEXT,
             created_at TEXT,
             updated_at TEXT,

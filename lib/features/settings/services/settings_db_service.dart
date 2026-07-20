@@ -33,6 +33,8 @@ class SettingsDbService {
       'primary_flow': extractString(rawData['primaryFlowType']),
       'delivery_flow': extractString(rawData['deliveryFlowType']),
       'delivery_radius': double.tryParse(rawData['deliveryRadius']?.toString() ?? '0') ?? 0.0,
+      // in saveSettings(), inside cleanSettings map:
+      'delivery_fee': double.tryParse(rawData['deliveryFee']?.toString() ?? '0') ?? 0.0,
       'welcome_video_url': extractString(rawData['welcomeVideoUrl']),
       'welcome_video_id': extractString(rawData['welcomeVideoMediaId']),
       'rzp_key': extractString(rawData['razorpayKeyId']),
@@ -76,6 +78,8 @@ class SettingsDbService {
         'primaryFlowType': row['primary_flow'],
         'deliveryFlowType': row['delivery_flow'],
         'deliveryRadius': row['delivery_radius'],
+        // in getSettings(), inside the returned map:
+        'deliveryFee': row['delivery_fee'],
         'welcomeVideoUrl': row['welcome_video_url'],
         'welcomeVideoMediaId': row['welcome_video_id'],
         'razorpayKeyId': row['rzp_key'],

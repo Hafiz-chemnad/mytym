@@ -2,7 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
-
+import '../models/order_assignment.dart';
+import '../services/order_assignment_api.dart';
+import '../../settings/services/delivery_settings_api.dart';
 // 🚀 MODULAR IMPORTS
 import '../../settings/services/settings_api_service.dart';
 import '../../settings/services/settings_db_service.dart';
@@ -56,6 +58,7 @@ class _LiveOrdersScreenState extends State<LiveOrdersScreen> with AutomaticKeepA
   Map<String, dynamic>? _selectedOrder;
   Map<String, String> _itemNameResolver = {};
   List<Map<String, String>> _deliveryBoys = [];
+  Map<String, OrderAssignment> _assignmentsByOrderId = {};
 
   // 🎨 POS Theme Colors
   final Color primaryTeal = const Color(0xFF096A56);
@@ -145,6 +148,7 @@ class _LiveOrdersScreenState extends State<LiveOrdersScreen> with AutomaticKeepA
       if (mounted) setState(() => _isLoading = false);
     }
     await _loadUnreadNumbers();
+    await _loadAssignments();
   }
 
   void _processOrderState(List<dynamic> data) {
@@ -240,6 +244,15 @@ class _LiveOrdersScreenState extends State<LiveOrdersScreen> with AutomaticKeepA
     String yy = parsed.year.toString().substring(2); 
     return "${parsed.day.toString().padLeft(2, '0')}/${parsed.month.toString().padLeft(2, '0')}/$yy ${hour12.toString().padLeft(2, '0')}:${parsed.minute.toString().padLeft(2, '0')} $ampm";
   }
+  String _formatShortTime(String? rawDate) {
+  if (rawDate == null || rawDate.isEmpty) return '';
+  DateTime? parsed = DateTime.tryParse(rawDate)?.toLocal();
+  if (parsed == null) return '';
+  int hour = parsed.hour;
+  String ampm = hour >= 12 ? 'PM' : 'AM';
+  int hour12 = hour % 12 == 0 ? 12 : hour % 12;
+  return "${hour12.toString().padLeft(2, '0')}:${parsed.minute.toString().padLeft(2, '0')} $ampm";
+}
 
   Future<void> _loadNameResolver() async {
     final items = await MenuDbService.instance.getAllMenuItems(widget.restaurantId);
@@ -259,6 +272,14 @@ class _LiveOrdersScreenState extends State<LiveOrdersScreen> with AutomaticKeepA
     if (match != null) idToFind = match.group(0)!;
     return _itemNameResolver[idToFind] ?? rawName;
   }
+  Future<void> _loadAssignments() async {
+  final list = await OrderAssignmentApi.instance.getAssignments(widget.restaurantId);
+  if (mounted) {
+    setState(() {
+      _assignmentsByOrderId = {for (var a in list) a.orderId: a};
+    });
+  }
+}
 
   Future<void> _loadDeliveryBoys() async {
     // 🚀 On-demand refresh (no background polling — delivery boys change
@@ -367,6 +388,7 @@ class _LiveOrdersScreenState extends State<LiveOrdersScreen> with AutomaticKeepA
       if (phone.isNotEmpty) {
         String itemsStr = "";
         double calcSubtotal = 0;
+        
         List<dynamic> items = order['items'] ?? [];
 
         for (var item in items) {
@@ -378,11 +400,15 @@ class _LiveOrdersScreenState extends State<LiveOrdersScreen> with AutomaticKeepA
           itemsStr += "* $name – ₹$price × $qty = ₹$lineTotal\n";
         }
 
-        double total = double.tryParse(order['totalAmount']?.toString() ?? '0') ?? 0.0;
-        double deliveryCharge = total - calcSubtotal;
-        if (deliveryCharge < 0) deliveryCharge = 0;
-        
+        double deliveryCharge = 0.0;
         String orderType = (order['orderType'] ?? '').toString().toUpperCase();
+if (orderType != 'TAKEAWAY') {
+  deliveryCharge = await _getDeliveryFee();
+}
+if (deliveryCharge < 0) deliveryCharge = 0;
+double finalTotal = calcSubtotal + deliveryCharge;
+        
+        
 
         String closingLine = orderType == 'TAKEAWAY'
             ? '''🍽️ We will inform you once your order is ready for pickup.
@@ -401,7 +427,7 @@ Order ID: $displayId
 $itemsStr
 💰 Sub Total: ₹$calcSubtotal
 🚚 Delivery Charge: ₹$deliveryCharge
-💳 Total Payable: ₹$total
+💳 Total Payable: ₹$finalTotal
 
 ⸻⸻⸻⸻
 $closingLine
@@ -496,6 +522,7 @@ $closingLine
     final nameController = TextEditingController();
     final phoneController = TextEditingController();
     final formKey = GlobalKey<FormState>();
+     final passwordController = TextEditingController();
 
     showDialog(
       context: parentContext,
@@ -524,9 +551,26 @@ $closingLine
                   return null;
                 },
               ),
-            ],
-          ),
+              const SizedBox(height: 14),                   // NEW
+            TextFormField(                                 // NEW
+              controller: passwordController,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: "Login Password",
+                hintText: "e.g. 1234",
+                prefixIcon: Icon(Icons.lock_outline, color: textMuted),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: primaryTeal, width: 2)),
+                helperText: "Delivery boy will use this to log into the delivery app",
+              ),
+              validator: (v) => (v == null || v.trim().length < 4) ? "At least 4 characters" : null,
+            ),
+          ],
         ),
+      ),
+            
+          
+        
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: Text("Cancel", style: TextStyle(color: textMuted))),
           ElevatedButton(
@@ -534,14 +578,17 @@ $closingLine
             onPressed: () async {
               if (!formKey.currentState!.validate()) return;
               String digits = phoneController.text.trim().replaceAll(RegExp(r'\D'), '');
+
               if (digits.length == 10) digits = '91$digits'; 
               else if (digits.startsWith('9191') && digits.length == 14) digits = digits.substring(2); 
               else if (digits.startsWith('91') && digits.length > 12) digits = '91${digits.substring(digits.length - 10)}';
               
               final name = nameController.text.trim();
+              final password = passwordController.text.trim();   // NEW
+
               Navigator.pop(ctx);
 
-              final success = await DeliveryBoyApi.instance.addDeliveryBoy(widget.restaurantId, name, digits);
+              final success = await DeliveryBoyApi.instance.registerDeliveryBoy(widget.restaurantId, name, digits, password);   // CHANGED from addDeliveryBoy
               if (!success) {
                 ScaffoldMessenger.of(parentContext).showSnackBar(
                   const SnackBar(content: Text("Failed to save delivery boy — check connection."), backgroundColor: Color(0xFFEF4444)),
@@ -559,50 +606,80 @@ $closingLine
   }
 
   void _showEditDeliveryBoyDialog(BuildContext parentContext, StateSetter setParentDialogState, Map<String, String> boy) {
-    final nameController = TextEditingController(text: boy['name']);
-    final formKey = GlobalKey<FormState>();
+  final nameController = TextEditingController(text: boy['name']);
+  final passwordController = TextEditingController();          // NEW
+  final formKey = GlobalKey<FormState>();
 
-    showDialog(
-      context: parentContext,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: Text("Edit Delivery Boy", style: TextStyle(fontWeight: FontWeight.bold, color: primaryTeal, fontSize: 16)),
-        content: Form(
-          key: formKey,
-          child: TextFormField(
-            controller: nameController, textCapitalization: TextCapitalization.words,
-            decoration: InputDecoration(labelText: "Name", prefixIcon: Icon(Icons.person_outline, color: textMuted), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: primaryTeal, width: 2))),
-            validator: (v) => (v == null || v.trim().isEmpty) ? "Name is required" : null,
-          ),
+  showDialog(
+    context: parentContext,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      title: Text("Edit Delivery Boy", style: TextStyle(fontWeight: FontWeight.bold, color: primaryTeal, fontSize: 16)),
+      content: Form(
+        key: formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              controller: nameController, textCapitalization: TextCapitalization.words,
+              decoration: InputDecoration(labelText: "Name", prefixIcon: Icon(Icons.person_outline, color: textMuted), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: primaryTeal, width: 2))),
+              validator: (v) => (v == null || v.trim().isEmpty) ? "Name is required" : null,
+            ),
+            const SizedBox(height: 14),                                              // NEW
+            TextFormField(                                                          // NEW
+              controller: passwordController,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: "New Password (optional)",
+                hintText: "Leave blank to keep current password",
+                prefixIcon: Icon(Icons.lock_reset, color: textMuted),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: primaryTeal, width: 2)),
+              ),
+              validator: (v) {
+                if (v == null || v.trim().isEmpty) return null;  // optional field
+                if (v.trim().length < 4) return "At least 4 characters";
+                return null;
+              },
+            ),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text("Cancel", style: TextStyle(color: textMuted))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: primaryTeal, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            onPressed: () async {
-              if (!formKey.currentState!.validate()) return;
-              final newName = nameController.text.trim();
-              final phone = boy['phone']!;
-              Navigator.pop(ctx);
-
-              final success = await DeliveryBoyApi.instance.updateDeliveryBoyName(widget.restaurantId, phone, newName);
-              if (!success) {
-                ScaffoldMessenger.of(parentContext).showSnackBar(
-                  const SnackBar(content: Text("Failed to update — check connection."), backgroundColor: Color(0xFFEF4444)),
-                );
-              }
-              final updated = await DeliveryBoyDbService.instance.getAllDeliveryBoys(widget.restaurantId);
-              setParentDialogState(() => _deliveryBoys = updated);
-              if (mounted) setState(() => _deliveryBoys = updated);
-            },
-            child: const Text("Save", style: TextStyle(color: Colors.white)),
-          ),
-        ],
       ),
-    );
-  }
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: Text("Cancel", style: TextStyle(color: textMuted))),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: primaryTeal, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          onPressed: () async {
+            if (!formKey.currentState!.validate()) return;
+            final newName = nameController.text.trim();
+            final newPassword = passwordController.text.trim();     // NEW
+            final phone = boy['phone']!;
+            Navigator.pop(ctx);
 
+            final nameSuccess = await DeliveryBoyApi.instance.updateDeliveryBoyName(widget.restaurantId, phone, newName);
+
+            bool passwordSuccess = true;                            // NEW
+            if (newPassword.isNotEmpty) {                           // NEW
+              passwordSuccess = await DeliveryBoyApi.instance         // NEW
+                  .resetDeliveryBoyPassword(widget.restaurantId, phone, newPassword);  // NEW
+            }
+
+            if (!nameSuccess || !passwordSuccess) {
+              ScaffoldMessenger.of(parentContext).showSnackBar(
+                SnackBar(content: Text(!nameSuccess ? "Failed to update name." : "Name updated, but password reset failed."), backgroundColor: const Color(0xFFEF4444)),
+              );
+            }
+            final updated = await DeliveryBoyDbService.instance.getAllDeliveryBoys(widget.restaurantId);
+            setParentDialogState(() => _deliveryBoys = updated);
+            if (mounted) setState(() => _deliveryBoys = updated);
+          },
+          child: const Text("Save", style: TextStyle(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+}
   void _confirmDeleteDeliveryBoy(BuildContext parentContext, StateSetter setParentDialogState, Map<String, String> boy) {
     showDialog(
       context: parentContext,
@@ -633,7 +710,123 @@ $closingLine
       ),
     );
   }
+void _showDeliverySettingsDialog() {
+  showDialog(
+    context: context,
+    builder: (dialogContext) {
+      bool sendPickup = false;
+      bool sendDelivered = true;
+      double deliveryCharge = 0.0;
+      bool loaded = false;
+      final chargeController = TextEditingController();
 
+      return StatefulBuilder(
+        builder: (sbContext, setDialogState) {
+          if (!loaded) {
+            DeliverySettingsApi.instance.getSettings(widget.restaurantId).then((s) {
+              if (s != null) {
+                setDialogState(() {
+                  sendPickup = s['sendPickup'];
+                  sendDelivered = s['sendDelivered'];
+deliveryCharge = (s['deliveryCharge'] as num?)?.toDouble() ?? 0.0;    
+              chargeController.text = deliveryCharge.toStringAsFixed(0);
+                  loaded = true;
+                });
+              } else {
+                setDialogState(() => loaded = true);
+              }
+            });
+          }
+
+          return AlertDialog(
+            backgroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            title: Text("Delivery Message Settings", style: TextStyle(fontWeight: FontWeight.bold, color: primaryTeal, fontSize: 16)),
+            content: !loaded
+                ? const SizedBox(height: 80, child: Center(child: CircularProgressIndicator()))
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+SwitchListTile(
+  contentPadding: EdgeInsets.zero,
+  title: const Text("Pickup message", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+  subtitle: Text("Notify customer when picked up", style: TextStyle(color: textMuted, fontSize: 12)),
+  value: sendPickup,
+  activeColor: primaryTeal,
+  onChanged: (v) async {
+    setDialogState(() => sendPickup = v);
+    await DeliverySettingsApi.instance.updateSettings(
+      widget.restaurantId, 
+      sendPickup: v,
+      deliveryCharge: deliveryCharge, // <-- ADD THIS LINE
+    );
+  },
+),
+                     SwitchListTile(
+  contentPadding: EdgeInsets.zero,
+  title: const Text("Delivered / feedback message", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+  subtitle: Text("Thank-you message after delivery", style: TextStyle(color: textMuted, fontSize: 12)),
+  value: sendDelivered,
+  activeColor: primaryTeal,
+  onChanged: (v) async {
+    setDialogState(() => sendDelivered = v);
+    await DeliverySettingsApi.instance.updateSettings(
+      widget.restaurantId, 
+      sendDelivered: v,
+      deliveryCharge: deliveryCharge, // <-- ADD THIS LINE
+    );
+  },
+),
+                      const Divider(height: 24, color: Color(0xFFE2EAE5)),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text("Delivery Charge (₹)", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: textDark)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text("Applied until changed — used across delivery boy app", style: TextStyle(color: textMuted, fontSize: 11)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: chargeController,
+                              keyboardType: TextInputType.number,
+                              decoration: InputDecoration(
+                                prefixText: "₹ ",
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: primaryTeal, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                            onPressed: () async {
+                              final val = double.tryParse(chargeController.text.trim());
+                              if (val == null) return;
+                              await DeliverySettingsApi.instance.updateSettings(widget.restaurantId, deliveryCharge: val);
+                              setDialogState(() => deliveryCharge = val);
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text("Delivery charge updated"), backgroundColor: Color(0xFF14804A)),
+                                );
+                              }
+                            },
+                            child: const Text("Save", style: TextStyle(color: Colors.white)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: Text("Close", style: TextStyle(color: textMuted))),
+            ],
+          );
+        },
+      );
+    },
+  );
+}
   void _showAssignDeliveryDialog(Map<String, dynamic> order) {
     final screenContext = context;
 
@@ -647,17 +840,27 @@ $closingLine
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
               contentPadding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-              title: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text("Assign Delivery Boy", style: TextStyle(fontWeight: FontWeight.bold, color: primaryTeal, fontSize: 16)),
-                  TextButton.icon(
-                    style: TextButton.styleFrom(backgroundColor: primaryTeal.withOpacity(0.08), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6)),
-                    icon: Icon(Icons.add, size: 16, color: primaryTeal), label: Text("Create New", style: TextStyle(color: primaryTeal, fontSize: 13, fontWeight: FontWeight.bold)),
-                    onPressed: () => _showCreateDeliveryBoyDialog(sbContext, setDialogState),
-                  ),
-                ],
-              ),
+           title: Row(
+  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  children: [
+    Text("Assign Delivery Boy", style: TextStyle(fontWeight: FontWeight.bold, color: primaryTeal, fontSize: 16)),
+    Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: Icon(Icons.settings_outlined, size: 18, color: textMuted),
+          tooltip: "Delivery Message Settings",
+          onPressed: () => _showDeliverySettingsDialog(),
+        ),
+        TextButton.icon(
+          style: TextButton.styleFrom(backgroundColor: primaryTeal.withOpacity(0.08), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6)),
+          icon: Icon(Icons.add, size: 16, color: primaryTeal), label: Text("Create New", style: TextStyle(color: primaryTeal, fontSize: 13, fontWeight: FontWeight.bold)),
+          onPressed: () => _showCreateDeliveryBoyDialog(sbContext, setDialogState),
+        ),
+      ],
+    ),
+  ],
+),
               content: SizedBox(
                 width: 360,
                 child: _deliveryBoys.isEmpty
@@ -738,6 +941,20 @@ $closingLine
     String customerPhone = order['customerNumber'] ?? 'Unknown';
     String total = order['totalAmount']?.toString() ?? '0';
     String orderNotes = order['additionalNotes']?.toString() ?? '';
+    double deliveryCharge = await _getDeliveryFee();
+    
+    // 🚀 NEW — create the durable assignment record on the delivery-boys backend
+  String cleanDeliveryPhoneForAssign = deliveryPhone.replaceAll('+', '').replaceAll(' ', '').trim();
+  DeliveryBoyApi.instance.assignOrder(
+    restaurantId: widget.restaurantId,
+    orderId: mongoId.isNotEmpty ? mongoId : displayId,
+    deliveryBoyPhone: cleanDeliveryPhoneForAssign,
+    deliveryBoyName: deliveryName,
+    deliveryCharge: deliveryCharge,
+    orderSnapshot: order,
+  ).then((success) {
+    if (!success) print('⚠️ Failed to create order_assignments record for $displayId');
+  });
 
     String locationText = "No location provided";
     var loc = order['location'];
@@ -752,13 +969,13 @@ $closingLine
       int qty = int.tryParse(item['qty']?.toString() ?? '1') ?? 1;
       itemsListStr += "$qty x $name\n";
     }
-
-    String msg = '🚚 New Delivery Order\n\n🧾 Order ID: $displayId\n\n📞 +$customerPhone\n\n📍 $locationText\n\n🍽️ Items:\n$itemsListStr\n💰 Total: ₹$total';
+    double finalTotal = (double.tryParse(total) ?? 0.0) + deliveryCharge;
+    String msg = '🚚 New Delivery Order\n\n🧾 Order ID: $displayId\n\n📞 +$customerPhone\n\n📍 $locationText\n\n🍽️ Items:\n$itemsListStr\n💰 Total: ₹$finalTotal\n🚚 Delivery Charge: ₹$deliveryCharge';
     bool deliverySuccess = await _sendOrderNotification(deliveryPhone, msg, templateFallback: 'two');
 
     String cleanDeliveryPhone = deliveryPhone.replaceAll('+', '').replaceAll(' ', '').trim();
-    String customerMsg = '🚴 Your delivery is on the way!\n\n📦 Order ID: $displayId\n\n🧑 Delivery Partner: $deliveryName\n📞 Contact: +$cleanDeliveryPhone\n\n🙏 Thank you for your order!';
-    bool customerSuccess = await _sendOrderNotification(customerPhone, customerMsg, templateFallback: 'two');
+String customerMsg = '🚴 Your delivery is on the way!\n\n📦 Order ID: $displayId\n\n🧑 Delivery Partner: $deliveryName\n📞 Contact: +$cleanDeliveryPhone\n🚚 Delivery Charge: ₹$deliveryCharge\n\n🙏 Thank you for your order!';  
+  bool customerSuccess = await _sendOrderNotification(customerPhone, customerMsg, templateFallback: 'two');
 
     if (mongoId.isNotEmpty) {
       String deliveryTag = '[DELIVERY_BOY:$deliveryName|$cleanDeliveryPhone]';
@@ -794,6 +1011,10 @@ $closingLine
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Location details not available.")));
     }
   }
+  Future<double> _getDeliveryFee() async {
+  final settings = await SettingsDbService.instance.getSettings();
+  return double.tryParse(settings?['deliveryFee']?.toString() ?? '0') ?? 0.0;
+}
 
   @override
   Widget build(BuildContext context) {
@@ -820,6 +1041,7 @@ $closingLine
                           child: _selectedOrder == null
                               ? Center(child: Text("No order selected", style: TextStyle(color: textMuted, fontSize: 16)))
                               : OrderDetailPanel(
+                                  assignment: _assignmentsByOrderId[_getSafeId(_selectedOrder!)],
                                   order: _selectedOrder!,
                                   resolveItemName: _resolveItemName,
                                   hasUnreadChat: _unreadNumbers.contains(_selectedOrder!['customerNumber'] ?? ''),
@@ -982,6 +1204,7 @@ $closingLine
                             isSelected: isSelected,
                             isUnacknowledged: isUnacknowledged,
                             blinkColor: _blinkColor.value ?? Colors.white,
+                            assignment: _assignmentsByOrderId[uniqueId],
                             onTap: () {
                               setState(() {
                                 _selectedOrder = o;

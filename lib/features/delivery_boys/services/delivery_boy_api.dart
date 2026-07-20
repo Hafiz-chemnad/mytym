@@ -95,4 +95,60 @@ class DeliveryBoyApi {
       return false;
     }
   }
+  Future<bool> registerDeliveryBoy(String restaurantId, String name, String phone, String password) async {
+  try {
+    final response = await http.post(
+      Uri.parse('${CrmApiClient.baseUrl}/api/$restaurantId/delivery-boys/register'),
+      headers: CrmApiClient.defaultHeaders,
+      body: jsonEncode({"name": name, "phone": phone, "password": password}),
+    );
+    if (response.statusCode == 200) {
+      final saved = jsonDecode(response.body);
+      await DeliveryBoyDbService.instance.upsertDeliveryBoyLocal(restaurantId, {
+        'name': saved['name'] ?? name,
+        'phone': phone,
+      });
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+Future<bool> resetDeliveryBoyPassword(String restaurantId, String phone, String newPassword) async {
+  try {
+    final response = await http.put(
+      Uri.parse('${CrmApiClient.baseUrl}/api/$restaurantId/delivery-boys/$phone/password'),
+      headers: CrmApiClient.defaultHeaders,
+      body: jsonEncode({"new_password": newPassword}),
+    );
+    return response.statusCode == 200;
+  } catch (e) {
+    return false;
+  }
+}
+Future<bool> assignOrder({
+  required String restaurantId,
+  required String orderId,
+  required String deliveryBoyPhone,
+  required String deliveryBoyName,
+  required double deliveryCharge,
+  required Map<String, dynamic> orderSnapshot,
+}) async {
+  try {
+    final response = await http.post(
+      Uri.parse('${CrmApiClient.baseUrl}/api/$restaurantId/orders/$orderId/assign'),
+      headers: CrmApiClient.defaultHeaders,
+      body: jsonEncode({
+        "delivery_boy_phone": deliveryBoyPhone,
+        "delivery_boy_name": deliveryBoyName,
+        "order_snapshot": orderSnapshot,
+        "delivery_charge": deliveryCharge,
+      }),
+    );
+    return response.statusCode == 200;
+  } catch (e) {
+    return false;
+  }
+}
 }

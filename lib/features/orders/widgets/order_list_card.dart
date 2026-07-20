@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/order_assignment.dart';
 
 class OrderListCard extends StatelessWidget {
   final Map<String, dynamic> order;
@@ -6,7 +7,7 @@ class OrderListCard extends StatelessWidget {
   final bool isUnacknowledged;
   final Color blinkColor;
   final VoidCallback onTap;
-
+  final OrderAssignment? assignment;
   const OrderListCard({
     super.key,
     required this.order,
@@ -14,6 +15,7 @@ class OrderListCard extends StatelessWidget {
     required this.isUnacknowledged,
     required this.blinkColor,
     required this.onTap,
+    this.assignment,
   });
 
   String _formatJustTime(String rawDate) {
@@ -35,6 +37,26 @@ class OrderListCard extends StatelessWidget {
     String total = order['totalAmount']?.toString() ?? '0';
     String payStatus = (order['paymentStatus'] ?? 'pending').toString().toLowerCase();
     String rawDate = order['createdAt'] is Map ? (order['createdAt']['\$date'] ?? '') : (order['createdAt'] ?? '');
+
+String badgeLabel = payStatus.toUpperCase();
+if (payStatus == 'assigned' && assignment != null) {
+  final status = assignment!.deliveryStatus;
+  if (status == 'delivered') {
+    final pm = assignment!.paymentMethod;
+    badgeLabel = pm == 'cash'
+        ? 'DELIVERED (CASH)'
+        : pm == 'gpay'
+            ? 'DELIVERED (GPAY)'
+            : 'DELIVERED';
+  } else {
+    const subLabels = {
+      'assigned': 'NEW',
+      'db_accepted': 'DB ACCEPTED',
+      'picked_up': 'PICKED UP',
+    };
+    badgeLabel = subLabels[status] ?? badgeLabel;
+  }
+}
 
     Color badgeBg;
     Color badgeText;
@@ -100,7 +122,7 @@ class OrderListCard extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(color: badgeBg, borderRadius: BorderRadius.circular(4)),
                   child: Text(
-                    payStatus.toUpperCase(),
+                    badgeLabel,
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: badgeText),
                   ),
                 ),

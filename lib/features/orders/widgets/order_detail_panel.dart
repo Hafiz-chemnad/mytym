@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/order_assignment.dart';
 
 class OrderDetailPanel extends StatelessWidget {
   final Map<String, dynamic> order;
@@ -12,7 +13,8 @@ class OrderDetailPanel extends StatelessWidget {
   final VoidCallback onChat;
   final VoidCallback onMap;
   final bool hasUnreadChat;
-
+  final OrderAssignment? assignment;
+  
   const OrderDetailPanel({
     super.key,
     required this.order,
@@ -26,6 +28,7 @@ class OrderDetailPanel extends StatelessWidget {
     required this.onChat,
     required this.onMap,
     required this.hasUnreadChat,
+    this.assignment,
   });
 
   String _formatFullDate(String rawDate) {
@@ -37,6 +40,15 @@ class OrderDetailPanel extends StatelessWidget {
     int hour12 = hour % 12 == 0 ? 12 : hour % 12;
     String yy = parsed.year.toString().substring(2);
     return "${parsed.day.toString().padLeft(2, '0')}/${parsed.month.toString().padLeft(2, '0')}/$yy ${hour12.toString().padLeft(2, '0')}:${parsed.minute.toString().padLeft(2, '0')} $ampm";
+  }
+    String _formatShortTime(String? rawDate) {
+    if (rawDate == null || rawDate.isEmpty) return '';
+    DateTime? parsed = DateTime.tryParse(rawDate)?.toLocal();
+    if (parsed == null) return '';
+    int hour = parsed.hour;
+    String ampm = hour >= 12 ? 'PM' : 'AM';
+    int hour12 = hour % 12 == 0 ? 12 : hour % 12;
+    return "${hour12.toString().padLeft(2, '0')}:${parsed.minute.toString().padLeft(2, '0')} $ampm";
   }
 
   @override
@@ -187,6 +199,19 @@ class OrderDetailPanel extends StatelessWidget {
       ),
     );
   }
+Widget _timelineRow(String label, String time) {
+  if (time.isEmpty) return const SizedBox();
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 4),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF6B7A75))),
+        Text(time, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF4B5563))),
+      ],
+    ),
+  );
+}
 
   Widget _buildItemsPanel() {
     List<dynamic> items = order['items'] ?? [];
@@ -265,48 +290,90 @@ class OrderDetailPanel extends StatelessWidget {
                 ] else if (isCompleted) ...[
                   _statusCard("✅ Order Completed", const Color(0xFFE6F4EA), const Color(0xFF14804A)),
                 ] else if (isAssigned) ...[
-                  Builder(
-                    builder: (ctx) {
-                      String dbName = '';
-                      String dbPhone = '';
-                      final match = RegExp(r'\[DELIVERY_BOY:([^|]+)\|([^\]]+)\]').firstMatch(notes);
-                      if (match != null) {
-                        dbName = match.group(1) ?? '';
-                        dbPhone = match.group(2) ?? '';
-                      }
-                      return Column(
-                        children: [
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                            decoration: BoxDecoration(color: const Color(0xFFF5F3FF), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFDDD6FE))),
-                            child: Row(
-                              children: [
-                                Container(width: 36, height: 36, decoration: BoxDecoration(color: const Color(0xFFEDE9FE), borderRadius: BorderRadius.circular(18)), child: const Icon(Icons.motorcycle_rounded, size: 18, color: Color(0xFF6D28D9))),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      const Text("Assigned to", style: TextStyle(fontSize: 11, color: Color(0xFF6D28D9), fontWeight: FontWeight.w500)),
-                                      const SizedBox(height: 2),
-                                      Text(dbName.isNotEmpty ? dbName : 'Delivery Boy', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF3B0764))),
-                                      if (dbPhone.isNotEmpty) ...[
-                                        const SizedBox(height: 1),
-                                        Text("+$dbPhone", style: const TextStyle(fontSize: 12, color: Color(0xFF6D28D9))),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Row(children: [Expanded(child: _actionBtn("Mark as Completed", Icons.check_circle_outline, const Color(0xFF14804A), Colors.white, onMarkCompleted))]),
-                        ],
-                      );
-                    },
+  Builder(
+    builder: (ctx) {
+      String dbName = assignment?.deliveryBoyName ?? '';
+      String dbPhone = assignment?.deliveryBoyPhone ?? '';
+      if (dbName.isEmpty || dbPhone.isEmpty) {
+        final match = RegExp(r'\[DELIVERY_BOY:([^|]+)\|([^\]]+)\]').firstMatch(notes);
+        if (match != null) {
+          dbName = dbName.isEmpty ? (match.group(1) ?? '') : dbName;
+          dbPhone = dbPhone.isEmpty ? (match.group(2) ?? '') : dbPhone;
+        }
+      }
+      final liveStatus = assignment?.deliveryStatus ?? 'assigned';
+String statusLabel;
+if (liveStatus == 'delivered') {
+  final pm = assignment?.paymentMethod;
+  statusLabel = pm == 'cash'
+      ? '🎉 Delivered (Cash)'
+      : pm == 'gpay'
+          ? '🎉 Delivered (GPay)'
+          : '🎉 Delivered';
+} else {
+  final statusLabels = {
+    'assigned': '📦 Waiting for delivery boy to accept',
+    'db_accepted': '✅ Delivery boy accepted',
+    'picked_up': '🏍️ Picked up',
+  };
+  statusLabel = statusLabels[liveStatus] ?? liveStatus;
+}
+      return Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(color: const Color(0xFFF5F3FF), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFDDD6FE))),
+            child: Row(
+              children: [
+                Container(width: 36, height: 36, decoration: BoxDecoration(color: const Color(0xFFEDE9FE), borderRadius: BorderRadius.circular(18)), child: const Icon(Icons.motorcycle_rounded, size: 18, color: Color(0xFF6D28D9))),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("Assigned to", style: TextStyle(fontSize: 11, color: Color(0xFF6D28D9), fontWeight: FontWeight.w500)),
+                      const SizedBox(height: 2),
+                      Text(dbName.isNotEmpty ? dbName : 'Delivery Boy', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF3B0764))),
+                      if (dbPhone.isNotEmpty) ...[
+                        const SizedBox(height: 1),
+                        Text("+$dbPhone", style: const TextStyle(fontSize: 12, color: Color(0xFF6D28D9))),
+                      ],
+                    ],
                   ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+  width: double.infinity,
+  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+  decoration: BoxDecoration(color: const Color(0xFFF9FAFB), borderRadius: BorderRadius.circular(8)),
+  child: Text(statusLabel, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF4B5563))),
+),
+const SizedBox(height: 8),
+Column(
+  crossAxisAlignment: CrossAxisAlignment.start,
+  children: [
+    if (assignment?.assignedAt != null && assignment!.assignedAt.isNotEmpty)
+      _timelineRow("📦 Assigned", _formatShortTime(assignment!.assignedAt)),
+    if (assignment?.acceptedAt != null && assignment!.acceptedAt!.isNotEmpty)
+      _timelineRow("✅ Accepted", _formatShortTime(assignment!.acceptedAt)),
+    if (assignment?.pickedUpAt != null && assignment!.pickedUpAt!.isNotEmpty)
+      _timelineRow("🏍️ Picked up", _formatShortTime(assignment!.pickedUpAt)),
+    if (assignment?.deliveredAt != null && assignment!.deliveredAt!.isNotEmpty)
+      _timelineRow("🎉 Delivered", _formatShortTime(assignment!.deliveredAt)),
+  ],
+),
+          const SizedBox(height: 10),
+
+          Row(children: [Expanded(child: _actionBtn("Mark as Completed", Icons.check_circle_outline, const Color(0xFF14804A), Colors.white, onMarkCompleted))]),
+        ],
+      );
+    },
+  ),
+
                 ] else if (isReady) ...[
                   Row(children: [Expanded(child: _actionBtn("Mark as Picked Up", Icons.check_circle_outline, const Color(0xFF14804A), Colors.white, onMarkCompleted))]),
                 ] else if (isAccepted) ...[
