@@ -17,7 +17,7 @@ class OrderApi {
       final url = Uri.parse(
         '${ApiClient.baseUrl}/api/orders/restaurant/$restaurantId?limit=50&page=1',
       );
-      final response = await http.get(url);
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         return body['orders'] ?? [];
@@ -34,7 +34,7 @@ class OrderApi {
       final url = Uri.parse(
         '${ApiClient.baseUrl}/api/orders/restaurant/$restaurantId/stats',
       );
-      final response = await http.get(url);
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         return json.decode(response.body);
       }
@@ -57,7 +57,7 @@ class OrderApi {
         url,
         headers: ApiClient.defaultHeaders,
         body: jsonEncode({"paymentStatus": status, "additionalNotes": notes}),
-      );
+      ).timeout(const Duration(seconds: 10));
       return response.statusCode == 200;
     } catch (e) {
       return false;
@@ -87,7 +87,7 @@ class OrderApi {
         final url = Uri.parse(
           '${ApiClient.baseUrl}/api/orders/restaurant/$restaurantId?limit=50&page=$currentPage',
         );
-        final response = await http.get(url);
+        final response = await http.get(url).timeout(const Duration(seconds: 10));
 
         if (response.statusCode == 200) {
           final body = json.decode(response.body);

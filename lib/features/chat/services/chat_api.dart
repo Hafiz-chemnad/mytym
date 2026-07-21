@@ -22,7 +22,7 @@ Future<List<dynamic>> fetchChatThread(
 }) async {
   try {
     final url = Uri.parse('${ApiClient.baseUrl}/api/restaurant-messages/thread?restaurantId=$restaurantId&customerNumber=$customerNumber&limit=$limit&page=$page');
-    final response = await http.get(url);
+    final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final dynamic body = json.decode(response.body);
@@ -120,7 +120,7 @@ Future<List<dynamic>> fetchChatThread(
           '${ApiClient.baseUrl}/api/restaurant-messages/restaurant/$restaurantId?direction=inbound&limit=50&page=$currentPage',
         );
 
-        final response = await http.get(url);
+        final response = await http.get(url).timeout(const Duration(seconds: 10));
 
         if (response.statusCode != 200) {
           print("❌ Message sync error on page $currentPage: ${response.statusCode}");

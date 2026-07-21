@@ -133,7 +133,7 @@ class MenuApi {
         final url = Uri.parse(
           '${CrmApiClient.baseUrl}/api/$restaurantId/menu?limit=50&page=$currentPage',
         );
-        final response = await http.get(url);
+        final response = await http.get(url).timeout(const Duration(seconds: 10));
 
         if (response.statusCode != 200) {
           print("❌ Menu sync error on page $currentPage: ${response.statusCode}");
